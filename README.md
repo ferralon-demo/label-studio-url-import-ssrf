@@ -1,230 +1,73 @@
-<img src="https://raw.githubusercontent.com/heartexlabs/label-studio/master/images/ls_github_header.png"/>
+# Label Studio: server-side request through the task-import URL (CVE-2022-36551)
 
-![GitHub](https://img.shields.io/github/license/heartexlabs/label-studio?logo=heartex) ![label-studio:build](https://github.com/heartexlabs/label-studio/workflows/label-studio:build/badge.svg) ![GitHub release](https://img.shields.io/github/v/release/heartexlabs/label-studio?include_prereleases)
+Case study of a server-side request forgery advisory (CWE-918) in
+[HumanSignal/label-studio](https://github.com/HumanSignal/label-studio) (formerly `heartexlabs/label-studio`): the
+project task-import API opens a caller-supplied URL with `urllib.request.urlopen` without checking its scheme;
+the upstream fix rejects `file://` URLs before the call.
 
-[Website](https://labelstud.io/) • [Docs](https://labelstud.io/guide/) • [Twitter](https://twitter.com/labelstudiohq) • [Join Slack Community <img src="https://app.heartex.ai/docs/images/slack-mini.png" width="18px"/>](https://slack.labelstudio.heartex.com/?source=github-1)
+> **Demo only, not for use.** This repository is a case study built from unmodified snapshots of
+> [HumanSignal/label-studio](https://github.com/HumanSignal/label-studio) at two historical commits. It is not a fork and is not maintained. Do not install, deploy, or
+> depend on it: the `baseline` branch contains code affected by the advisories below.
 
+**This branch: `fix`** (tag `pone`): snapshot of `HumanSignal/label-studio` @ [`501142cb81`](https://github.com/HumanSignal/label-studio/commit/501142cb815ac964b0c600c491885b67386870c2) (2022-08-23), the upstream fix commit. The vulnerable snapshot is on [`baseline`](https://github.com/ferralon-demo/label-studio-url-import-ssrf/tree/baseline).
 
-## What is Label Studio?
+## Advisory
 
-<!-- <a href="https://labelstud.io/blog/release-130.html"><img src="https://github.com/heartexlabs/label-studio/raw/master/docs/themes/htx/source/images/release-130/LS-Hits-v1.3.png" align="right" /></a> -->
+| | |
+|---|---|
+| **CVE** | [CVE-2022-36551](https://nvd.nist.gov/vuln/detail/CVE-2022-36551) |
+| **GHSA** | [GHSA-pc6f-259w-w3j6](https://github.com/advisories/GHSA-pc6f-259w-w3j6), "Heartex - Label Studio Community Edition vulnerable to SSRF in the Data Import module", CWE-918 |
+| **Affected** | `label-studio` < 1.6.0, per the GHSA record |
+| **Upstream fix** | [HumanSignal/label-studio#2840](https://github.com/HumanSignal/label-studio/pull/2840), commit [`501142cb81`](https://github.com/HumanSignal/label-studio/commit/501142cb815ac964b0c600c491885b67386870c2), merged 2022-08-23 |
 
-Label Studio is an open source data labeling tool. It lets you label data types like audio, text, images, videos, and time series with a simple and straightforward UI and export to various model formats. It can be used to prepare raw data or improve existing training data to get more accurate ML models.
+## Ingress and sink at `baseline`
 
-- [Try out Label Studio](#try-out-label-studio)
-- [What you get from Label Studio](#what-you-get-from-label-studio)
-- [Included templates for labeling data in Label Studio](#included-templates-for-labeling-data-in-label-studio)
-- [Set up machine learning models with Label Studio](#set-up-machine-learning-models-with-Label-Studio)
-- [Integrate Label Studio with your existing tools](#integrate-label-studio-with-your-existing-tools)
+All line numbers are at upstream commit `ad29804731`.
 
-![Gif of Label Studio annotating different types of data](https://raw.githubusercontent.com/heartexlabs/label-studio/master/images/annotation_examples.gif)
+| Step | Location |
+|---|---|
+| **URL route** | `path('<int:pk>/import', api.ImportAPI.as_view(), name='project-import')`, [`label_studio/data_import/urls.py:17`](https://github.com/HumanSignal/label-studio/blob/ad298047312123e2fb781cd6d7b9668ed1b51edc/label_studio/data_import/urls.py#L17), mounted under `api/projects/` at [line 26](https://github.com/HumanSignal/label-studio/blob/ad298047312123e2fb781cd6d7b9668ed1b51edc/label_studio/data_import/urls.py#L26) and included from [`label_studio/core/urls.py:58`](https://github.com/HumanSignal/label-studio/blob/ad298047312123e2fb781cd6d7b9668ed1b51edc/label_studio/core/urls.py#L58). No decorator: the view is registered through Django URL configuration. |
+| **View** | `class ImportAPI(generics.CreateAPIView)`, [`label_studio/data_import/api.py:161`](https://github.com/HumanSignal/label-studio/blob/ad298047312123e2fb781cd6d7b9668ed1b51edc/label_studio/data_import/api.py#L161); `post` ([line 175](https://github.com/HumanSignal/label-studio/blob/ad298047312123e2fb781cd6d7b9668ed1b51edc/label_studio/data_import/api.py#L175)) delegates to DRF's `CreateAPIView.post`, which dispatches to `ImportAPI.create` ([line 198](https://github.com/HumanSignal/label-studio/blob/ad298047312123e2fb781cd6d7b9668ed1b51edc/label_studio/data_import/api.py#L198)); `create` calls `load_tasks(request, project)` at [line 209](https://github.com/HumanSignal/label-studio/blob/ad298047312123e2fb781cd6d7b9668ed1b51edc/label_studio/data_import/api.py#L209) |
+| **Input** | `load_tasks`, [`label_studio/data_import/uploader.py:143`](https://github.com/HumanSignal/label-studio/blob/ad298047312123e2fb781cd6d7b9668ed1b51edc/label_studio/data_import/uploader.py#L143), reads form field `url` at [line 162](https://github.com/HumanSignal/label-studio/blob/ad298047312123e2fb781cd6d7b9668ed1b51edc/label_studio/data_import/uploader.py#L162) |
+| **Existing check** | `if settings.SSRF_PROTECTION_ENABLED and url_is_local(url): raise ImportFromLocalIPError`, [lines 175-176](https://github.com/HumanSignal/label-studio/blob/ad298047312123e2fb781cd6d7b9668ed1b51edc/label_studio/data_import/uploader.py#L175-L176); `SSRF_PROTECTION_ENABLED` defaults to `False` ([`label_studio/core/settings/base.py:372`](https://github.com/HumanSignal/label-studio/blob/ad298047312123e2fb781cd6d7b9668ed1b51edc/label_studio/core/settings/base.py#L372)). No URL-scheme check precedes the call. |
+| **Call** | `tasks_from_url(file_upload_ids, project, request, url)` at [line 177](https://github.com/HumanSignal/label-studio/blob/ad298047312123e2fb781cd6d7b9668ed1b51edc/label_studio/data_import/uploader.py#L177); `tasks_from_url` defined at [line 114](https://github.com/HumanSignal/label-studio/blob/ad298047312123e2fb781cd6d7b9668ed1b51edc/label_studio/data_import/uploader.py#L114) |
+| **Sink** | stdlib `urllib.request.urlopen(url, context=ctx)` at [`uploader.py:123`](https://github.com/HumanSignal/label-studio/blob/ad298047312123e2fb781cd6d7b9668ed1b51edc/label_studio/data_import/uploader.py#L123) |
 
-Have a custom dataset? You can customize Label Studio to fit your needs. Read an [introductory blog post](https://towardsdatascience.com/introducing-label-studio-a-swiss-army-knife-of-data-labeling-140c1be92881) to learn more. 
+## What the fix changes
 
-## Try out Label Studio
+At `501142cb81`, `load_tasks` raises `ValidationError('"url" is not valid')` when
+`url.strip().startswith('file://')` ([lines 178-179](https://github.com/HumanSignal/label-studio/blob/501142cb815ac964b0c600c491885b67386870c2/label_studio/data_import/uploader.py#L178-L179)),
+before the `tasks_from_url` call (now [line 181](https://github.com/HumanSignal/label-studio/blob/501142cb815ac964b0c600c491885b67386870c2/label_studio/data_import/uploader.py#L181)). The commit also
+adds `label_studio/tests/data_import/test_uploader.py`. The call to `urlopen` is still present: the fix adds a
+guard and removes no call.
 
-Install Label Studio locally, or deploy it in a cloud instance. Also you can try [Label Studio Teams](https://app.heartex.com).
+## Provenance
 
-- [Install locally with Docker](#install-locally-with-docker)
-- [Run with Docker Compose (Label Studio + Nginx + PostgreSQL)](#run-with-docker-compose)
-- [Install locally with pip](#install-locally-with-pip)
-- [Install locally with Anaconda](#install-locally-with-anaconda)
-- [Install for local development](#install-for-local-development)
-- [Deploy in a cloud instance](#deploy-in-a-cloud-instance)
+This is not a fork: a fresh repository whose code branches hold upstream source snapshots, with no upstream
+history and no upstream remote.
 
-### Install locally with Docker
-Official Label Studio docker image is [here](https://hub.docker.com/r/heartexlabs/label-studio) and it can be downloaded with `docker pull`. 
-Run Label Studio in a Docker container and access it at `http://localhost:8080`.
+| Branch | Tag | Upstream commit | Date | Snapshot commit | Snapshot tree |
+|---|---|---|---|---|---|
+| `baseline` | `poe` | [`ad29804731`](https://github.com/HumanSignal/label-studio/commit/ad298047312123e2fb781cd6d7b9668ed1b51edc) | 2022-08-22 | `f75fe894f078f7afa79968fc71d643109eb6cf42` | `ccd778fa8dfb6472b97638a3ede19b9cc26571dc` |
+| `fix` | `pone` | [`501142cb81`](https://github.com/HumanSignal/label-studio/commit/501142cb815ac964b0c600c491885b67386870c2) | 2022-08-23 | `2a140fbde0929875e262cf68618318744b8e7f8a` | `d1293b5feb153a5eb4d75b11a563ae9974e8ea7a` |
 
+Each snapshot commit is the upstream tree at that commit with one change: `.github/workflows/` (24 files) is
+removed so that upstream CI does not run here. No other file is added, removed, or edited. The `fix` snapshot's
+parent is the `baseline` snapshot, so the diff between the two snapshot commits
+([compare](https://github.com/ferralon-demo/label-studio-url-import-ssrf/compare/f75fe894f078f7afa79968fc71d643109eb6cf42...2a140fbde0929875e262cf68618318744b8e7f8a)) is exactly the upstream fix commit's diff. On each code branch, a second
+commit replaces upstream's `README.md` with a branch-specific version of this file; upstream's README is in the snapshot commit.
 
-```bash
-docker pull heartexlabs/label-studio:latest
-docker run -it -p 8080:8080 -v `pwd`/mydata:/label-studio/data heartexlabs/label-studio:latest
-```
-You can find all the generated assets, including SQLite3 database storage `label_studio.sqlite3` and uploaded files, in the `./mydata` directory.
+To check a snapshot against upstream from a clone of this repository:
 
-#### Override default Docker install
-You can override the default launch command by appending the new arguments:
-```bash
-docker run -it -p 8080:8080 -v `pwd`/mydata:/label-studio/data heartexlabs/label-studio:latest label-studio --log-level DEBUG
-```
-
-#### Build a local image with Docker
-If you want to build a local image, run:
-```bash
-docker build -t heartexlabs/label-studio:latest .
-```
-
-### Run with Docker Compose
-Docker Compose script provides production-ready stack consisting of the following components:
-
-- Label Studio
-- [Nginx](https://www.nginx.com/) - proxy web server used to load various static data, including uploaded audio, images, etc.
-- [PostgreSQL](https://www.postgresql.org/) - production-ready database that replaces less performant SQLite3.
-
-To start using the app from `http://localhost` run this command:
-```bash
-docker-compose up
+```sh
+git fetch https://github.com/HumanSignal/label-studio ad298047312123e2fb781cd6d7b9668ed1b51edc
+git diff --stat FETCH_HEAD f75fe894f078f7afa79968fc71d643109eb6cf42   # lists only .github/workflows/*
 ```
 
-### Install locally with pip
+## Licence
 
-```bash
-# Requires Python >=3.7 <=3.9
-pip install label-studio
-
-# Start the server at http://localhost:8080
-label-studio
-```
-
-### Install locally with Anaconda
-
-```bash
-conda create --name label-studio
-conda activate label-studio
-pip install label-studio
-```
-
-### Install for local development
-
-You can run the latest Label Studio version locally without installing the package with pip. 
-
-```bash
-# Install all package dependencies
-pip install -e .
-# Run database migrations
-python label_studio/manage.py migrate
-# Start the server in development mode at http://localhost:8080
-python label_studio/manage.py runserver
-```
-
-### Deploy in a cloud instance
-
-You can deploy Label Studio with one click in Heroku, Microsoft Azure, or Google Cloud Platform: 
-
-[<img src="https://www.herokucdn.com/deploy/button.svg" height="30px">](https://heroku.com/deploy?template=https://github.com/heartexlabs/label-studio/tree/heroku-persistent-pg)
-[<img src="https://aka.ms/deploytoazurebutton" height="30px">](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fheartexlabs%2Flabel-studio%2Fmaster%2Fazuredeploy.json)
-[<img src="https://deploy.cloud.run/button.svg" height="30px">](https://deploy.cloud.run)
-
-
-#### Apply frontend changes
-
-The frontend part of Label Studio app lies in the `frontend/` folder and written in React JSX. In case you've made some changes there, the following commands should be run before building / starting the instance:
-
-```
-cd label_studio/frontend/
-npm ci
-npx webpack
-cd ../..
-python label_studio/manage.py collectstatic --no-input
-```
-
-### Troubleshoot installation
-If you see any errors during installation, try to rerun the installation
-
-```bash
-pip install --ignore-installed label-studio
-```
-
-#### Install dependencies on Windows 
-To run Label Studio on Windows, download and install the following wheel packages from [Gohlke builds](https://www.lfd.uci.edu/~gohlke/pythonlibs) to ensure you're using the correct version of Python:
-- [lxml](https://www.lfd.uci.edu/~gohlke/pythonlibs/#lxml)
-
-```bash
-# Upgrade pip 
-pip install -U pip
-
-# If you're running Win64 with Python 3.8, install the packages downloaded from Gohlke:
-pip install lxml‑4.5.0‑cp38‑cp38‑win_amd64.whl
-
-# Install label studio
-pip install label-studio
-```
-
-#### Run test suite
-```bash
-pip install -r deploy/requirements-test.txt
-cd label_studio
-
-# postgres (assumes default postgres user,db,pass)
-DJANGO_DB=default DJANGO_SETTINGS_MODULE=core.settings.label_studio python -m pytest -vv -n auto
-
-# sqlite3
-DJANGO_DB=sqlite DJANGO_SETTINGS_MODULE=core.settings.label_studio python -m pytest -vv -n auto
-```
-
-
-## What you get from Label Studio
-
-![Screenshot of Label Studio data manager grid view with images](https://raw.githubusercontent.com/heartexlabs/label-studio/master/images/labelstudio-ui.gif)
-
-- **Multi-user labeling** sign up and login, when you create an annotation it's tied to your account.
-- **Multiple projects** to work on all your datasets in one instance.
-- **Streamlined design** helps you focus on your task, not how to use the software.
-- **Configurable label formats** let you customize the visual interface to meet your specific labeling needs.
-- **Support for multiple data types** including images, audio, text, HTML, time-series, and video. 
-- **Import from files or from cloud storage** in Amazon AWS S3, Google Cloud Storage, or JSON, CSV, TSV, RAR, and ZIP archives. 
-- **Integration with machine learning models** so that you can visualize and compare predictions from different models and perform pre-labeling.
-- **Embed it in your data pipeline** REST API makes it easy to make it a part of your pipeline
-
-## Included templates for labeling data in Label Studio 
-
-Label Studio includes a variety of templates to help you label your data, or you can create your own using specifically designed configuration language. The most common templates and use cases for labeling include the following cases:
-
-<img src="https://raw.githubusercontent.com/heartexlabs/label-studio/master/images/templates-categories.jpg" />
-
-## Set up machine learning models with Label Studio
-
-Connect your favorite machine learning model using the Label Studio Machine Learning SDK. Follow these steps:
-
-1. Start your own machine learning backend server. See [more detailed instructions](https://github.com/heartexlabs/label-studio-ml-backend).
-2. Connect Label Studio to the server on the model page found in project settings.
-
-This lets you:
-
-- **Pre-label** your data using model predictions. 
-- Do **online learning** and retrain your model while new annotations are being created. 
-- Do **active learning** by labeling only the most complex examples in your data.
-
-## Integrate Label Studio with your existing tools
-
-You can use Label Studio as an independent part of your machine learning workflow or integrate the frontend or backend into your existing tools.  
-
-* Use the [Label Studio Frontend](https://github.com/heartexlabs/label-studio-frontend) as a separate React library. See more in the [Frontend Library documentation](https://labelstud.io/guide/frontend.html). 
-
-## Ecosystem
-
-| Project | Description |
-|-|-|
-| label-studio | Server, distributed as a pip package |
-| [label-studio-frontend](https://github.com/heartexlabs/label-studio-frontend) | React and JavaScript frontend and can run standalone in a web browser or be embedded into your application. |  
-| [data-manager](https://github.com/heartexlabs/dm2) | React and JavaScript frontend for managing data. Includes the Label Studio Frontend. Relies on the label-studio server or a custom backend with the expected API methods. | 
-| [label-studio-converter](https://github.com/heartexlabs/label-studio-converter) | Encode labels in the format of your favorite machine learning library | 
-| [label-studio-transformers](https://github.com/heartexlabs/label-studio-transformers) | Transformers library connected and configured for use with Label Studio |
-
-
-## Roadmap
-
-Want to use **The Coolest Feature X** but Label Studio doesn't support it? Check out [our public roadmap](roadmap.md)!
-
-## Citation
-
-```tex
-@misc{Label Studio,
-  title={{Label Studio}: Data labeling software},
-  url={https://github.com/heartexlabs/label-studio},
-  note={Open source software available from https://github.com/heartexlabs/label-studio},
-  author={
-    Maxim Tkachenko and
-    Mikhail Malyuk and
-    Andrey Holmanyuk and
-    Nikolai Liubimov},
-  year={2020-2022},
-}
-```
-
-## License
-
-This software is licensed under the [Apache 2.0 LICENSE](/LICENSE) © [Heartex](https://www.heartex.ai/). 2020-2021
-
-<img src="https://github.com/heartexlabs/label-studio/blob/master/images/opossum_looking.png?raw=true" title="Hey everyone!" height="140" width="140" />
+Label Studio is licensed under the Apache License 2.0. The upstream `LICENSE` and `NOTICE` are kept verbatim at
+the root of the `baseline` and `fix` branches, as are the third-party licence files upstream ships
+(`licenses/django_license.txt`, `licenses/python_license.txt`, and the `*.LICENSE.txt` files beside the bundled
+front-end JavaScript under `label_studio/frontend/dist/`). Changes made for this case study, on 2026-10-07:
+`.github/workflows/` removed, and this `README.md` replaces upstream's.
